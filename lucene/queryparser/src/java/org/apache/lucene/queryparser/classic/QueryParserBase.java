@@ -19,6 +19,8 @@ package org.apache.lucene.queryparser.classic;
 import java.io.StringReader;
 import java.text.DateFormat;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.document.DateTools;
@@ -29,6 +31,7 @@ import org.apache.lucene.search.*;
 import org.apache.lucene.search.BooleanClause.Occur;
 import org.apache.lucene.search.BooleanQuery.TooManyClauses;
 import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.BytesRefBuilder;
 import org.apache.lucene.util.QueryBuilder;
 import org.apache.lucene.util.automaton.RegExp;
 
@@ -512,6 +515,8 @@ public abstract class QueryParserBase extends QueryBuilder implements CommonQuer
     return createFieldQuery(analyzer, occur, field, queryText, quoted || autoGeneratePhraseQueries, phraseSlop);
   }
 
+
+
   /**
    * Base implementation delegates to {@link #getFieldQuery(String,String,boolean)}.
    * This method may be overridden, for example, to return
@@ -741,11 +746,36 @@ public abstract class QueryParserBase extends QueryBuilder implements CommonQuer
     }
     if (!allowLeadingWildcard && (termStr.startsWith("*") || termStr.startsWith("?")))
       throw new ParseException("'*' or '?' not allowed as first character in WildcardQuery");
-    if (lowercaseExpandedTerms) {
-      termStr = termStr.toLowerCase(locale);
-    }
-    Term t = new Term(field, termStr);
+
+    Term t = new Term(field, analyzeWildcard(field, termStr));
     return newWildcardQuery(t);
+  }
+
+  private static final Pattern WILDCARD_PATTERN = Pattern.compile("(\\\\.)|([?*]+)");
+
+  private BytesRef analyzeWildcard(String field, String termStr) {
+    // best effort to not pass the wildcard characters and escaped characters through #normalize
+    Matcher wildcardMatcher = WILDCARD_PATTERN.matcher(termStr);
+    BytesRefBuilder sb = new BytesRefBuilder();
+    int last = 0;
+
+    while (wildcardMatcher.find()){
+      if (wildcardMatcher.start() > 0) {
+        String chunk = termStr.substring(last, wildcardMatcher.start());
+        BytesRef normalized = getAnalyzer().normalize(field, chunk);
+        sb.append(normalized);
+      }
+      //append the matched group - without normalizing
+      sb.append(new BytesRef(wildcardMatcher.group()));
+
+      last = wildcardMatcher.end();
+    }
+    if (last < termStr.length()){
+      String chunk = termStr.substring(last);
+      BytesRef normalized = getAnalyzer().normalize(field, chunk);
+      sb.append(normalized);
+    }
+    return sb.toBytesRef();
   }
 
   /**
@@ -770,10 +800,11 @@ public abstract class QueryParserBase extends QueryBuilder implements CommonQuer
    */
   protected Query getRegexpQuery(String field, String termStr) throws ParseException
   {
-    if (lowercaseExpandedTerms) {
-      termStr = termStr.toLowerCase(locale);
-    }
-    Term t = new Term(field, termStr);
+    // We need to pass the whole string to #normalize, which will not work with
+    // custom attribute factories for the binary term impl, and may not work
+    // with some analyzers
+    BytesRef term = getAnalyzer().normalize(field, termStr);
+    Term t = new Term(field, term);
     return newRegexpQuery(t);
   }
 
@@ -804,10 +835,8 @@ public abstract class QueryParserBase extends QueryBuilder implements CommonQuer
   {
     if (!allowLeadingWildcard && termStr.startsWith("*"))
       throw new ParseException("'*' not allowed as first character in PrefixQuery");
-    if (lowercaseExpandedTerms) {
-      termStr = termStr.toLowerCase(locale);
-    }
-    Term t = new Term(field, termStr);
+    BytesRef term = getAnalyzer().normalize(field, termStr);
+    Term t = new Term(field, term);
     return newPrefixQuery(t);
   }
 
@@ -824,10 +853,8 @@ public abstract class QueryParserBase extends QueryBuilder implements CommonQuer
    */
   protected Query getFuzzyQuery(String field, String termStr, float minSimilarity) throws ParseException
   {
-    if (lowercaseExpandedTerms) {
-      termStr = termStr.toLowerCase(locale);
-    }
-    Term t = new Term(field, termStr);
+    BytesRef term = getAnalyzer().normalize(field, termStr);
+    Term t = new Term(field, term);
     return newFuzzyQuery(t, minSimilarity, fuzzyPrefixLength);
   }
 
